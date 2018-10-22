@@ -1,0 +1,418 @@
+Chess08: Implementing an AI (artificial intelligence) player
+<img src="http://proghammer.files.wordpress.com/2010/09/chessgame_72.jpg" alt="chess icon 72" title="chessgame_72" width="72" height="72" class="alignleft size-full wp-image-102" /> Today we implement a computer player using some basic artificial intelligence concepts. We look at how to generate valid moves, how to evaluate the current game state and how to search for the best move by looking a few moves ahead.
+<!--more-->
+<blockquote>
+This is the eights part in a series of articles about programming a chess game in Java using Swing. As all articles build upon each other, I encourage you to also have a look at the previous articles in this series (<a href="http://proghammer.wordpress.com/2010/08/10/chess01-dragging-game-pieces/">Chess01: Dragging game pieces</a>, <a href="http://proghammer.wordpress.com/2010/08/16/chess02-introducing-game-state/">Chess02: Introducing game state</a>, <a href="http://proghammer.wordpress.com/2010/09/10/chess03-separating-game-logic-from-user-interface-logic/">Chess03: Separating view and logic</a>, <a href="http://proghammer.wordpress.com/2010/09/16/chess04-implementing-an-alternative-user-interface/">Chess04: Implementing an alternative user interface</a>, <a href="http://proghammer.wordpress.com/2010/09/22/chess05-enforcing-game-rules/">Chess05: Enforcing game rules</a>, <a href="http://proghammer.wordpress.com/2010/10/12/chess06-highlighting-valid-target-locations/">Chess06: Highlighting valid target locations</a>, <a href="http://proghammer.wordpress.com/2010/11/25/chess07-new-game-flow-handling/">Chess07: New game flow handling and AI preparation</a>).
+</blockquote>
+
+Last time we created the IPlayerHandler interface that a class has to implement if it wants to be a valid game client. Today we will create a new game client that represents a computer controlled player. We start by creating a new class called SimpleAiPlayerHandler that implements the IPlayerHandler interface.
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+
+	private ChessGame chessGame;
+
+	public SimpleAiPlayerHandler(ChessGame chessGame) {
+		this.chessGame = chessGame;
+	}
+
+	//..
+}
+[/sourcecode]
+
+The interface requires us to implement two methods getMove() and moveSuccessfullyExecuted(). In this project, we only need to focus on the getMove() method. The moveSuccessfullyExecuted() method can stay empty.
+
+What we want to do in the getMove() method is: Generate a list of all valid moves that the computer player can perform and then evaluate each of these moves to see how good it is. Afterwards we return the 'best' move that we have found. So, the basic algorithm looks like this:
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+
+	//..
+
+	@Override
+	public Move getMove() {
+		return getBestMove();
+	}
+
+	/**
+	 * get best move for current game situation
+	 * @return a valid Move instance
+	 */
+	private Move getBestMove() {
+		System.out.println("thinking...");
+
+		List<Move> validMoves = generateMoves();
+		int bestResult = Integer.MIN_VALUE;
+		Move bestMove = null;
+		
+		for (Move move : validMoves) {
+			executeMove(move);
+
+			int evaluationResult = this.evaluateState();
+
+			undoMove(move);
+			if( evaluationResult > bestResult){
+				bestResult = evaluationResult;
+				bestMove = move;
+			}
+		}
+		System.out.println("done thinking! best move is: "+bestMove);
+		return bestMove;
+	}
+
+}
+[/sourcecode]
+
+This is a very common approach when implementing an artificial intelligence for games: Generate all possible moves and then evaluate each move to see which one is the best. The tricky thing is to find an efficient way to generate the moves and how to evaluate them. First let us have a look at how we can get a list of all possible moves. I have chosen a very simple approach here. I iterate over all game pieces controlled by the computer player and for each game piece I iterate over all board locations to check if they are valid target locations for this game piece. This is done by generating Move objects and using the MoveValidator class that was implemented in a previous article. This is of course not the most efficient way of generating the list of possible moves, especially for pieces like pawns or kings, but it is easy to understand and implement.
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+
+	//..
+
+	/**
+	* generate all possible/valid moves for the specified game
+	* @param state - game state for which the moves should be generated
+	* @return list of all possible/valid moves
+	*/
+	private List<Move> generateMoves() {
+
+		List<Piece> pieces = this.chessGame.getPieces();
+		List<Move> validMoves = new ArrayList<Move>();
+		Move testMove = new Move(0,0,0,0);
+
+		int pieceColor = (this.chessGame.getGameState()==ChessGame.GAME_STATE_WHITE
+			?Piece.COLOR_WHITE
+			:Piece.COLOR_BLACK);
+
+		// iterate over all non-captured pieces
+		for (Piece piece : pieces) {
+
+			// only look at pieces of current players color
+			if (pieceColor == piece.getColor()) {
+				// start generating move
+				testMove.sourceRow = piece.getRow();
+				testMove.sourceColumn = piece.getColumn();
+
+				// iterate over all board rows and columns
+				for (int targetRow = Piece.ROW_1; targetRow <= Piece.ROW_8; targetRow++) {
+					for (int targetColumn = Piece.COLUMN_A; targetColumn <= Piece.COLUMN_H; targetColumn++) {
+
+						// finish generating move
+						testMove.targetRow = targetRow;
+						testMove.targetColumn = targetColumn;
+
+						// check if generated move is valid
+						if (this.validator.isMoveValid(testMove, false)) {
+							// valid move
+							validMoves.add(testMove.clone());
+						} else {
+							// generated move is invalid, so we skip it
+						}
+					}
+				}
+
+			}
+		}
+		return validMoves;
+	}
+
+	//..
+}
+[/sourcecode]
+
+Now that we have the list of possible moves, we need to evaluate each of them. There are tons of different approaches to this problem. I have decided to go with a simple, but also very common approach. Each piece is assigned a value (e.g. a queen is worth 90). The values of the pieces on the board for each color are summed up and the difference between the two colors is the score. It is important to note, that the evaluate method will always return a value from the perspective of the active player. This means, that if it is the blacks players turn, and only a black queen is on the board, the evaluation of the current situation is +90. If it would be the black players turn and only the white queen is on the board, the evaluation result is -90.
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+
+	//..
+
+	/**
+	 * evaluate the current game state from the view of the
+	 * current player. High numbers indicate a better situation for
+	 * the current player.
+	 *
+	 * @return integer score of current game state
+	 */
+	private int evaluateState() {
+
+		// add up score
+		//
+		int scoreWhite = 0;
+		int scoreBlack = 0;
+		for (Piece piece : this.chessGame.getPieces()) {
+			if(piece.getColor() == Piece.COLOR_BLACK){
+				scoreBlack +=
+					getScoreForPieceType(piece.getType());
+
+			}else if( piece.getColor() == Piece.COLOR_WHITE){
+				scoreWhite +=
+					getScoreForPieceType(piece.getType());
+
+			}else{
+				throw new IllegalStateException(
+						"unknown piece color found: "+piece.getColor());
+			}
+		}
+		
+		// return evaluation result depending on who's turn it is
+		int gameState = this.chessGame.getGameState();
+		
+		if( gameState == ChessGame.GAME_STATE_BLACK){
+			return scoreBlack - scoreWhite;
+		
+		}else if(gameState == ChessGame.GAME_STATE_WHITE){
+			return scoreWhite - scoreBlack;
+		
+		}else if(gameState == ChessGame.GAME_STATE_END_WHITE_WON
+				|| gameState == ChessGame.GAME_STATE_END_BLACK_WON){
+			return Integer.MIN_VALUE + 1;
+		
+		}else{
+			throw new IllegalStateException("unknown game state: "+gameState);
+		}
+	}
+
+	/**
+	 * get the evaluation score for the specified piece type
+	 * @param type - one of Piece.TYPE_..
+	 * @return integer score
+	 */
+	private int getScoreForPieceType(int type){
+		switch (type) {
+			case Piece.TYPE_BISHOP: return 30;
+			case Piece.TYPE_KING: return 99999;
+			case Piece.TYPE_KNIGHT: return 30;
+			case Piece.TYPE_PAWN: return 10;
+			case Piece.TYPE_QUEEN: return 90;
+			case Piece.TYPE_ROOK: return 50;
+			default: throw new IllegalArgumentException("unknown piece type: "+type);
+		}
+	}
+
+	//..
+
+}
+[/sourcecode]
+
+We could stop here and we would have a weird behaving, but playable computer opponent, but let's add a little more 'intelligence'.
+
+Most often it is not enough to only evaluate a board at a given moment, instead it makes sense to look ahead and anticipate what your opponent can do in return. You can also take this further by not only guessing your opponents move, but considering also the moves that you could do in return to that. Or even further by guessing the opponents move in return to your move in return to your opponents move etc.. You get the idea.
+
+So, we want to execute the move that gives us the best evaluation after a certain number of future moves. We basically want to 'search' for the best evaluation in a tree of possible moves (each move has x possible counter moves which again have y possible counter moves etc.). Luckily this is a well studied field in artificial intelligence and we can simply use an existing algorithm to perform this search for us (e.g. MinMax, NegaMax, AlphaBeta, etc.). I will not go into the details of the available algorithms as there are a lot of other sites that do a much better job at this than I could ever do. There is one thing I would like to mention anyway. As the algorithm has to execute future moves to be able to evaluate the resulting board position, we also need to be able to undo these moves at a later stage. You might have already noticed this in one of the code snippets above. Therefore I have introduced an undo function in the ChessGame class. I also extended the Move class with a capturedPiece field, so that a given Move can be completely undone.
+
+[sourcecode language="java"]
+public class Move {
+	//..
+	public Piece capturedPiece;
+	//..
+}
+[/sourcecode]
+
+[sourcecode language="java"]
+public class ChessGame implements Runnable{
+
+	//..
+
+	/**
+	 * Move piece to the specified location. If the target location is occupied
+	 * by an opponent piece, that piece is marked as 'captured'. If the move
+	 * could not be executed successfully, 'false' is returned and the game
+	 * state does not change.
+	 * 
+	 * @param move to execute
+	 * @return true, if piece was moved successfully
+	 */
+	public boolean movePiece(Move move) {
+		//set captured piece in move
+		// this information is needed in the undoMove() method.
+		move.capturedPiece = this.getNonCapturedPieceAtLocation(move.targetRow, move.targetColumn);
+		
+		//..
+	}
+
+	/**
+	 * Undo the specified move. It will also adjust the game state appropriately.
+	 * @param move
+	 */
+	public void undoMove(Move move){
+		Piece piece = getNonCapturedPieceAtLocation(move.targetRow, move.targetColumn);
+		
+		piece.setRow(move.sourceRow);
+		piece.setColumn(move.sourceColumn);
+		
+		if(move.capturedPiece != null){
+			move.capturedPiece.setRow(move.targetRow);
+			move.capturedPiece.setColumn(move.targetColumn);
+			move.capturedPiece.isCaptured(false);
+			this.capturedPieces.remove(move.capturedPiece);
+			this.pieces.add(move.capturedPiece);
+		}
+		
+		if(piece.getColor() == Piece.COLOR_BLACK){
+			this.gameState = ChessGame.GAME_STATE_BLACK;
+		}else{
+			this.gameState = ChessGame.GAME_STATE_WHITE;
+		}
+	}
+
+	//..
+
+}
+[/sourcecode]
+
+For the search I have chosen to go with the NegaMax algorithm. It's not the most efficient, but it is still rather easy to understand and gets the job done. Here is the algorithm:
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+	//..
+
+	/**
+	 * number of moves to look into the future
+	 */
+	private int maxDepth = 2;
+
+	/**
+	 * evaluate current game state according to nega max algorithm
+	 *
+	 * @param depth - current depth level (number of counter moves that still need to be evaluated)
+	 * @param indent - debug string, that is placed in front of each log message
+	 * @return integer score of game state after looking at "depth" counter moves
+	 */
+	private int negaMax(int depth, String indent) {
+
+		if (depth <= 0
+			|| this.chessGame.getGameState() == ChessGame.GAME_STATE_END_WHITE_WON
+			|| this.chessGame.getGameState() == ChessGame.GAME_STATE_END_BLACK_WON){
+			
+			return evaluateState();
+		}
+		
+		List<Move> moves = generateMoves(false);
+		int currentMax = Integer.MIN_VALUE;
+		
+		for(Move currentMove : moves){
+			
+			executeMove(currentMove);
+			//ChessConsole.printCurrentGameState(this.chessGame);
+			int score = -1 * negaMax(depth - 1, indent+" ");
+			//System.out.println(indent+"handling move: "+currentMove+" : "+score);
+			undoMove(currentMove);
+			
+			if( score > currentMax){
+				currentMax = score;
+			}
+		}
+		//System.out.println(indent+"max: "+currentMax);
+		return currentMax;
+	}
+
+	//..
+}
+[/sourcecode]
+
+So now we can put all the pieces together and we are done, right? Yes, we could, but I would like to add one small detail that will result in a nicer game play by the computer opponent. The idea is that the computer player should try to control the center of the board. This is done by providing a matrix that adds a bonus for each piece that is near the center of the board. It's a small change, but it makes the computer player a bit more interesting.
+
+[sourcecode language="java"]
+public class SimpleAiPlayerHandler implements IPlayerHandler {
+	//..
+
+	/**
+	 * evaluate the current game state from the view of the
+	 * current player. High numbers indicate a better situation for
+	 * the current player.
+	 *
+	 * @return integer score of current game state
+	 */
+	private int evaluateState() {
+
+		// add up score
+		//
+		//..
+		for (Piece piece : this.chessGame.getPieces()) {
+			if(piece.getColor() == Piece.COLOR_BLACK){
+				//..
+				scoreBlack += getScoreForPiecePosition(piece.getRow(),piece.getColumn());
+			}else if( piece.getColor() == Piece.COLOR_WHITE){
+				//..
+				scoreWhite += getScoreForPiecePosition(piece.getRow(),piece.getColumn());
+			}else{
+				throw new IllegalStateException("unknown piece color found: "+piece.getColor());
+			}
+		}
+		
+		//..
+	}
+
+	/**
+	 * get the evaluation bonus for the specified position
+	 * @param row - one of Piece.ROW_..
+	 * @param column - one of Piece.COLUMN_..
+	 * @return integer score
+	 */
+	private int getScoreForPiecePosition(int row, int column) {
+		byte[][] positionWeight =
+		{ {1,1,1,1,1,1,1,1}
+		 ,{2,2,2,2,2,2,2,2}
+		 ,{2,2,3,3,3,3,2,2}
+		 ,{2,2,3,4,4,3,2,2}
+		 ,{2,2,3,4,4,3,2,2}
+		 ,{2,2,3,3,3,3,2,2}
+		 ,{2,2,2,2,2,2,2,2}
+		 ,{1,1,1,1,1,1,1,1}
+		 };
+		return positionWeight[row][column];
+	}
+
+	//..
+}
+[/sourcecode]
+
+Well, this article only covered a fraction of possible approaches to this interesting field of computer science. There are plenty of very good articles on this subject. If you are particularly interested in chess, you should have a look at <a href="http://en.wikipedia.org/wiki/Chess_strategy_and_tactics">Chess strategy and tactics on Wikipedia</a>, <a href="http://en.wikipedia.org/wiki/Computer_chess">Computer chess on Wikipedia</a> and the excellent <a href="http://www.gamedev.net/reference/programming/features/chess1/">Chess programming article series at gamedev.net</a>. If you are interested in artificial intelligence for games in general you can have a look at <a href="http://alturl.com/osyze">Board games chapter of the book 'Artificial Intelligence for Games'</a>.
+
+At the end I would like to show how the new class can be used.
+
+[sourcecode language="java"]
+public class Main {
+
+	public static void main(String[] args) {
+
+		// first we create the game
+		ChessGame chessGame = new ChessGame();
+
+		// then we create the clients/players
+		//ChessGui chessGui = new ChessGui(chessGame);
+		//ChessConsole chessConsole = new ChessConsole(chessGame);
+		SimpleAiPlayerHandler ai1 = new SimpleAiPlayerHandler(chessGame);
+		SimpleAiPlayerHandler ai2 = new SimpleAiPlayerHandler(chessGame);
+
+		// set strength of AI
+		ai1.maxDepth = 1;
+		ai2.maxDepth = 2;
+
+		// then we attach the clients/players to the game
+		//chessGame.setPlayer(Piece.COLOR_WHITE, chessGui);
+		//chessGame.setPlayer(Piece.COLOR_WHITE, chessConsole);
+		chessGame.setPlayer(Piece.COLOR_WHITE, ai2);
+		chessGame.setPlayer(Piece.COLOR_BLACK, ai1);
+
+		// in the end we start the game
+		new Thread(chessGame).start();
+	}
+
+}
+[/sourcecode]
+
+As you can see above, it is no problem to have one computer opponent play against another computer opponent. Play around with the evaluation method and have fun optimizing and improving the code.
+
+Happy coding!
+
+Resources:
+
+The source code (eclipse project): coming soon
+The chess icons come from: <a href="http://ixian.com/chess/jin-piece-sets/">http://ixian.com/chess/jin-piece-sets/</a>
+<a href="http://en.wikipedia.org/wiki/Chess_strategy_and_tactics">Chess strategy and tactics on Wikipedia</a>
+<a href="http://en.wikipedia.org/wiki/Computer_chess">Computer chess on Wikipedia</a>
+<a href="http://www.gamedev.net/reference/programming/features/chess1/">Chess programming article series at gamedev.net</a>
+<a href="http://alturl.com/osyze">Board games chapter of the book 'Artificial Intelligence for Games'</a>
